@@ -1,0 +1,13 @@
+# Sensitive pi agent data
+/auth.json
+/sessions/
+
+# Local/runtime files
+/bin/
+*.log
+.DS_Store
+
+# Dependencies/build outputs
+node_modules/
+dist/
+build/
