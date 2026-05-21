@@ -6,5 +6,6 @@
   "transport": "sse",
   "packages": [
     "/home/psrock/github/forks/pi/packages/coding-agent/examples/extensions/mcp"
-  ]
+  ],
+  "theme": "midnight-nord"
 }
