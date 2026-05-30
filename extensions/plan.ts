@@ -15,7 +15,7 @@ interface PlanReviewResult {
 	plan: string;
 }
 
-interface CommandRunnerAPI extends ExtensionAPI {
+interface CommandRunnerAPI {
 	runCommand?: (command: string, options?: { waitForIdle?: boolean }) => void;
 }
 
