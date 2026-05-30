@@ -11,7 +11,7 @@ const START_PLAN_PROMPT = `You are now in planning mode.
 Goal:
 - Explore enough context to create a practical, executable plan for the user's problem.
 - Prefer read-only exploration. Do not edit files, create files, delete files, or run destructive commands while planning unless the user explicitly asks for that during planning.
-- Identify core decisions that materially affect the solution. Use ask_question for single-answer decisions and ask_multi_question when multiple answers may apply.
+- Identify core decisions that materially affect the solution. Use ask_question for all user questions, setting each question's type to "single" or "multi".
 - Avoid asking about minor implementation details that can be decided safely later.
 - When you believe the plan is complete, call finish_plan with the final plan. Do not just print the final plan without calling finish_plan.
 
@@ -26,7 +26,7 @@ const ACTIVE_PLANNING_SYSTEM = `Planning mode is active for this session.
 
 Follow these rules until finish_plan is accepted:
 - Explore before planning, using read-only actions where possible.
-- For core decisions, call ask_question for single-answer decisions or ask_multi_question when multiple answers may apply.
+- For core decisions, call ask_question and set each question's type to "single" or "multi" as appropriate.
 - Do not implement the plan in this session.
 - When the plan is ready, call finish_plan with the final plan and wait for the user's approval flow.`;
 
@@ -147,7 +147,7 @@ export default function planExtension(pi: ExtensionAPI) {
 		promptSnippet: "Start guided planning mode for a problem before implementation",
 		promptGuidelines: [
 			"Use start_plan when the user asks to plan, brainstorm an implementation approach, or explore a problem before making changes.",
-			"In planning mode, use ask_question for single-answer decisions, ask_multi_question for multiple-answer decisions, and finish_plan when the final plan is ready.",
+			"In planning mode, use ask_question for all user questions, setting each question's type to \"single\" or \"multi\", and use finish_plan when the final plan is ready.",
 		],
 		parameters: StartPlanParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
