@@ -11,7 +11,7 @@ const START_PLAN_PROMPT = `You are now in planning mode.
 Goal:
 - Explore enough context to create a practical, executable plan for the user's problem.
 - Prefer read-only exploration. Do not edit files, create files, delete files, or run destructive commands while planning unless the user explicitly asks for that during planning.
-- Identify core decisions that materially affect the solution. For each core decision, use the ask_plan_choice tool and provide exactly 3 choices, marking one as recommended. The UI will also give the user a 4th custom option.
+- Identify core decisions that materially affect the solution. Use ask_question for single-answer decisions and ask_multi_question when multiple answers may apply.
 - Avoid asking about minor implementation details that can be decided safely later.
 - When you believe the plan is complete, call finish_plan with the final plan. Do not just print the final plan without calling finish_plan.
 
@@ -26,27 +26,12 @@ const ACTIVE_PLANNING_SYSTEM = `Planning mode is active for this session.
 
 Follow these rules until finish_plan is accepted:
 - Explore before planning, using read-only actions where possible.
-- For core decisions, call ask_plan_choice with exactly 3 options and one recommended option; the user can choose a 4th custom answer in the UI.
+- For core decisions, call ask_question for single-answer decisions or ask_multi_question when multiple answers may apply.
 - Do not implement the plan in this session.
 - When the plan is ready, call finish_plan with the final plan and wait for the user's approval flow.`;
 
 const StartPlanParams = Type.Object({
 	problem: Type.String({ description: "The problem or goal to plan for." }),
-});
-
-const AskPlanChoiceParams = Type.Object({
-	decision: Type.String({ description: "The core decision the user needs to make." }),
-	context: Type.Optional(Type.String({ description: "Short context explaining why this decision matters." })),
-	options: Type.Array(Type.String({ description: "A concrete option the user can choose." }), {
-		minItems: 3,
-		maxItems: 3,
-		description: "Exactly 3 choices. The UI will add a 4th custom option.",
-	}),
-	recommendedIndex: Type.Number({
-		minimum: 1,
-		maximum: 3,
-		description: "1-based index of the recommended option.",
-	}),
 });
 
 const FinishPlanParams = Type.Object({
@@ -162,7 +147,7 @@ export default function planExtension(pi: ExtensionAPI) {
 		promptSnippet: "Start guided planning mode for a problem before implementation",
 		promptGuidelines: [
 			"Use start_plan when the user asks to plan, brainstorm an implementation approach, or explore a problem before making changes.",
-			"In planning mode, use ask_plan_choice for core user decisions and finish_plan when the final plan is ready.",
+			"In planning mode, use ask_question for single-answer decisions, ask_multi_question for multiple-answer decisions, and finish_plan when the final plan is ready.",
 		],
 		parameters: StartPlanParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -173,73 +158,6 @@ export default function planExtension(pi: ExtensionAPI) {
 				content: [{ type: "text", text: "Planning mode has been queued as a follow-up user message." }],
 				details: { planningActive: true },
 				terminate: true,
-			};
-		},
-	});
-
-	pi.registerTool({
-		name: "ask_plan_choice",
-		label: "Ask Plan Choice",
-		description: "Ask the user to choose between exactly 3 planning options plus a 4th custom option. Use for core decisions during planning.",
-		promptSnippet: "Ask the user a core planning decision with 3 choices plus custom",
-		promptGuidelines: [
-			"Use ask_plan_choice for core planning decisions that materially affect the solution.",
-			"ask_plan_choice must receive exactly 3 options and one recommended option.",
-		],
-		parameters: AskPlanChoiceParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (params.options.length !== 3) {
-				throw new Error("ask_plan_choice requires exactly 3 options.");
-			}
-			const recommendedIndex = Math.round(params.recommendedIndex);
-			if (recommendedIndex < 1 || recommendedIndex > 3) {
-				throw new Error("recommendedIndex must be 1, 2, or 3.");
-			}
-
-			const intro = [params.context?.trim(), "", params.decision.trim()].filter(Boolean).join("\n");
-			if (!ctx.hasUI) {
-				const text = [
-					intro,
-					...params.options.map((option, index) => `${index + 1}. ${option}${index + 1 === recommendedIndex ? " (recommended)" : ""}`),
-					"4. Custom answer",
-				].join("\n");
-				return {
-					content: [{ type: "text", text: `No interactive UI is available. Ask the user this decision in chat:\n\n${text}` }],
-					details: { needsChatQuestion: true },
-				};
-			}
-
-			const labels = params.options.map((option, index) => `${index + 1}. ${option}${index + 1 === recommendedIndex ? "  [recommended]" : ""}`);
-			const customLabel = "4. Custom answer…";
-			const selected = await ctx.ui.select(intro, [...labels, customLabel]);
-
-			if (!selected) {
-				return {
-					content: [{ type: "text", text: "The user dismissed the decision dialog. Ask for the decision in chat and wait for their answer." }],
-					details: { cancelled: true },
-				};
-			}
-
-			let answer: string;
-			let choice: number | "custom";
-			if (selected === customLabel) {
-				answer = (await ctx.ui.editor("Custom planning choice", ""))?.trim() ?? "";
-				choice = "custom";
-				if (!answer) {
-					return {
-						content: [{ type: "text", text: "The user selected custom but did not provide an answer. Ask for the decision in chat and wait for their answer." }],
-						details: { cancelled: true, choice },
-					};
-				}
-			} else {
-				const index = labels.indexOf(selected);
-				choice = index + 1;
-				answer = params.options[index] ?? selected;
-			}
-
-			return {
-				content: [{ type: "text", text: `User decision: ${answer}` }],
-				details: { decision: params.decision, choice, answer, recommendedIndex },
 			};
 		},
 	});

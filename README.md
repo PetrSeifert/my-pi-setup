@@ -6,6 +6,8 @@ Public pi coding-agent configuration.
 
 - `settings.json` - default provider/model and package settings
 - `extensions/codex-limits.ts` - status-bar extension for Codex usage limits
+- `extensions/questions.ts` - reusable `ask_question` and `ask_multi_question` tools for structured user input
+- `extensions/plan.ts` - guided planning mode that uses the reusable question tools
 
 ## Not included
 
