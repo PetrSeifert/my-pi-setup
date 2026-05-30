@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Editor, type EditorTheme, Key, type KeybindingsManager, type KeyId, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 interface AskQuestionDetails {
@@ -28,6 +28,64 @@ interface AskMultiQuestionDetails {
 interface MultiSelectResult {
 	answers: string[];
 	selectedIndexes: number[];
+}
+
+interface SingleSelectResult {
+	answer: string;
+	choice: number | "custom";
+}
+
+interface SingleSelectRenderOption {
+	label: string;
+	choice: number | "custom";
+	isCustom?: boolean;
+	recommended?: boolean;
+}
+
+type UiTheme = ExtensionContext["ui"]["theme"];
+type SelectKeybinding =
+	| "tui.select.up"
+	| "tui.select.down"
+	| "tui.select.pageUp"
+	| "tui.select.pageDown"
+	| "tui.select.confirm"
+	| "tui.select.cancel";
+
+const SELECT_PAGE_STEP = 5;
+
+const editorTheme = (theme: UiTheme): EditorTheme => ({
+	borderColor: (s) => theme.fg("accent", s),
+	selectList: {
+		selectedPrefix: (t) => theme.fg("accent", t),
+		selectedText: (t) => theme.fg("accent", t),
+		description: (t) => theme.fg("muted", t),
+		scrollInfo: (t) => theme.fg("dim", t),
+		noMatch: (t) => theme.fg("warning", t),
+	},
+});
+
+const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(value, max));
+
+function matchesBinding(keybindings: KeybindingsManager, data: string, keybinding: SelectKeybinding, fallback: KeyId): boolean {
+	return keybindings.matches(data, keybinding) || matchesKey(data, fallback);
+}
+
+function borderLine(theme: UiTheme, width: number): string {
+	return theme.fg("accent", "─".repeat(Math.max(0, width)));
+}
+
+function addIntroLines(add: (line: string) => void, theme: UiTheme, context: string | undefined, question: string): void {
+	const contextText = context?.trim();
+	if (contextText) {
+		for (const line of contextText.split(/\r?\n/)) add(line ? theme.fg("muted", ` ${line}`) : "");
+		add("");
+	}
+	for (const line of question.trim().split(/\r?\n/)) add(line ? theme.fg("text", ` ${line}`) : "");
+}
+
+function invalidateCache(cache: { cachedWidth?: number; cachedLines?: string[] }): void {
+	cache.cachedWidth = undefined;
+	cache.cachedLines = undefined;
 }
 
 const AskQuestionParams = Type.Object({
@@ -104,11 +162,161 @@ function selectedAnswers(options: string[], selected: Set<number>): string[] {
 	return [...selected].sort((a, b) => a - b).map((index) => options[index]).filter((option): option is string => option !== undefined);
 }
 
-function selectionSummary(count: number, minSelections: number, maxSelections: number | undefined): string {
+function selectionSummary(_count: number, minSelections: number, maxSelections: number | undefined): string {
 	if (maxSelections !== undefined && minSelections === maxSelections) return `Select exactly ${minSelections}.`;
 	if (maxSelections !== undefined) return `Select ${minSelections}-${maxSelections}.`;
 	if (minSelections > 0) return `Select at least ${minSelections}.`;
 	return "Select any number.";
+}
+
+async function askSingleSelect(
+	ctx: ExtensionContext,
+	question: string,
+	context: string | undefined,
+	options: string[],
+	recommendedIndex: number | undefined,
+	allowCustom: boolean,
+): Promise<SingleSelectResult | null | undefined> {
+	const renderOptions: SingleSelectRenderOption[] = options.map((label, index) => ({
+		label,
+		choice: index + 1,
+		recommended: recommendedIndex === index + 1,
+	}));
+	if (allowCustom) renderOptions.push({ label: "Custom answer…", choice: "custom", isCustom: true });
+
+	return ctx.ui.custom<SingleSelectResult | null | undefined>((tui, theme, keybindings, done) => {
+		let cursor = recommendedIndex === undefined ? 0 : recommendedIndex - 1;
+		let editMode = false;
+		let message: string | undefined;
+		const cache: { cachedWidth?: number; cachedLines?: string[] } = {};
+		const editor = new Editor(tui, editorTheme(theme));
+
+		function refresh(): void {
+			invalidateCache(cache);
+			tui.requestRender();
+		}
+
+		function selectedOption(): SingleSelectRenderOption | undefined {
+			return renderOptions[cursor];
+		}
+
+		function startCustomAnswer(): void {
+			editMode = true;
+			message = undefined;
+			editor.setText("");
+			refresh();
+		}
+
+		function submitSelected(): void {
+			const selected = selectedOption();
+			if (!selected) return;
+			if (selected.isCustom) {
+				startCustomAnswer();
+				return;
+			}
+			done({ answer: selected.label, choice: selected.choice });
+		}
+
+		editor.onSubmit = (value) => {
+			const answer = value.trim();
+			if (!answer) {
+				message = "Type a custom answer before submitting.";
+				refresh();
+				return;
+			}
+			done({ answer, choice: "custom" });
+		};
+
+		function handleInput(data: string): void {
+			if (editMode) {
+				if (matchesBinding(keybindings, data, "tui.select.cancel", Key.escape)) {
+					editMode = false;
+					message = undefined;
+					editor.setText("");
+					refresh();
+					return;
+				}
+				message = undefined;
+				editor.handleInput(data);
+				refresh();
+				return;
+			}
+
+			if (matchesBinding(keybindings, data, "tui.select.up", Key.up)) {
+				cursor = clamp(cursor - 1, 0, renderOptions.length - 1);
+				message = undefined;
+				refresh();
+				return;
+			}
+			if (matchesBinding(keybindings, data, "tui.select.down", Key.down)) {
+				cursor = clamp(cursor + 1, 0, renderOptions.length - 1);
+				message = undefined;
+				refresh();
+				return;
+			}
+			if (matchesBinding(keybindings, data, "tui.select.pageUp", Key.pageUp)) {
+				cursor = clamp(cursor - SELECT_PAGE_STEP, 0, renderOptions.length - 1);
+				message = undefined;
+				refresh();
+				return;
+			}
+			if (matchesBinding(keybindings, data, "tui.select.pageDown", Key.pageDown)) {
+				cursor = clamp(cursor + SELECT_PAGE_STEP, 0, renderOptions.length - 1);
+				message = undefined;
+				refresh();
+				return;
+			}
+			if (matchesBinding(keybindings, data, "tui.select.confirm", Key.enter)) {
+				submitSelected();
+				return;
+			}
+			if (matchesBinding(keybindings, data, "tui.select.cancel", Key.escape)) {
+				done(null);
+			}
+		}
+
+		function render(width: number): string[] {
+			if (cache.cachedLines && cache.cachedWidth === width) return cache.cachedLines;
+
+			const lines: string[] = [];
+			const add = (line: string) => lines.push(truncateToWidth(line, width));
+
+			add(borderLine(theme, width));
+			addIntroLines(add, theme, context, question);
+			lines.push("");
+
+			for (let i = 0; i < renderOptions.length; i++) {
+				const option = renderOptions[i];
+				const isCursor = i === cursor;
+				const pointer = isCursor ? theme.fg("accent", "> ") : "  ";
+				const label = `${i + 1}. ${option.label}${option.isCustom && editMode ? " ✎" : ""}`;
+				const optionColor = isCursor ? "accent" : "text";
+				const recommended = option.recommended ? theme.fg("success", " [recommended]") : "";
+				add(`${pointer}${theme.fg(optionColor, label)}${recommended}`);
+			}
+
+			if (editMode) {
+				lines.push("");
+				add(theme.fg("muted", " Your answer:"));
+				for (const line of editor.render(Math.max(1, width - 2))) add(` ${line}`);
+			}
+
+			lines.push("");
+			if (message) add(theme.fg("warning", ` ${message}`));
+			add(theme.fg("dim", editMode ? " Enter submit • Esc back to options" : " ↑↓ navigate • Enter select • Esc cancel"));
+			add(borderLine(theme, width));
+
+			cache.cachedWidth = width;
+			cache.cachedLines = lines;
+			return lines;
+		}
+
+		return {
+			render,
+			invalidate: () => invalidateCache(cache),
+			handleInput,
+		};
+	});
 }
 
 async function askMultiSelect(
@@ -119,11 +327,11 @@ async function askMultiSelect(
 	defaultSelectedIndexes: number[] | undefined,
 	minSelections: number,
 	maxSelections: number | undefined,
-): Promise<MultiSelectResult | null> {
-	return ctx.ui.custom<MultiSelectResult | null>((tui, theme, _keybindings, done) => {
+): Promise<MultiSelectResult | null | undefined> {
+	return ctx.ui.custom<MultiSelectResult | null | undefined>((tui, theme, keybindings, done) => {
 		let cursor = 0;
 		let message: string | undefined;
-		let cachedLines: string[] | undefined;
+		const cache: { cachedWidth?: number; cachedLines?: string[] } = {};
 		const selected = normalizeSelectedIndexes(defaultSelectedIndexes, options.length, maxSelections);
 
 		function count(): number {
@@ -137,7 +345,7 @@ async function askMultiSelect(
 		}
 
 		function refresh(): void {
-			cachedLines = undefined;
+			invalidateCache(cache);
 			tui.requestRender();
 		}
 
@@ -167,14 +375,26 @@ async function askMultiSelect(
 		}
 
 		function handleInput(data: string): void {
-			if (matchesKey(data, Key.up)) {
-				cursor = Math.max(0, cursor - 1);
+			if (matchesBinding(keybindings, data, "tui.select.up", Key.up)) {
+				cursor = clamp(cursor - 1, 0, options.length - 1);
 				message = undefined;
 				refresh();
 				return;
 			}
-			if (matchesKey(data, Key.down)) {
-				cursor = Math.min(options.length - 1, cursor + 1);
+			if (matchesBinding(keybindings, data, "tui.select.down", Key.down)) {
+				cursor = clamp(cursor + 1, 0, options.length - 1);
+				message = undefined;
+				refresh();
+				return;
+			}
+			if (matchesBinding(keybindings, data, "tui.select.pageUp", Key.pageUp)) {
+				cursor = clamp(cursor - SELECT_PAGE_STEP, 0, options.length - 1);
+				message = undefined;
+				refresh();
+				return;
+			}
+			if (matchesBinding(keybindings, data, "tui.select.pageDown", Key.pageDown)) {
+				cursor = clamp(cursor + SELECT_PAGE_STEP, 0, options.length - 1);
 				message = undefined;
 				refresh();
 				return;
@@ -183,24 +403,23 @@ async function askMultiSelect(
 				toggleCurrent();
 				return;
 			}
-			if (matchesKey(data, Key.enter)) {
+			if (matchesBinding(keybindings, data, "tui.select.confirm", Key.enter)) {
 				submit();
 				return;
 			}
-			if (matchesKey(data, Key.escape)) {
+			if (matchesBinding(keybindings, data, "tui.select.cancel", Key.escape)) {
 				done(null);
 			}
 		}
 
 		function render(width: number): string[] {
-			if (cachedLines) return cachedLines;
+			if (cache.cachedLines && cache.cachedWidth === width) return cache.cachedLines;
+
 			const lines: string[] = [];
-			const border = "─".repeat(Math.max(0, width));
 			const add = (line: string) => lines.push(truncateToWidth(line, width));
 
-			add(theme.fg("accent", border));
-			const intro = introText(context, question).split("\n");
-			for (const line of intro) add(line ? theme.fg("text", ` ${line}`) : "");
+			add(borderLine(theme, width));
+			addIntroLines(add, theme, context, question);
 			lines.push("");
 
 			for (let i = 0; i < options.length; i++) {
@@ -217,17 +436,16 @@ async function askMultiSelect(
 			add(theme.fg(statusColor, ` ${count()} selected. ${selectionSummary(count(), minSelections, maxSelections)}`));
 			if (message) add(theme.fg("warning", ` ${message}`));
 			add(theme.fg("dim", " ↑↓ navigate • Space toggle • Enter submit • Esc cancel"));
-			add(theme.fg("accent", border));
+			add(borderLine(theme, width));
 
-			cachedLines = lines;
+			cache.cachedWidth = width;
+			cache.cachedLines = lines;
 			return lines;
 		}
 
 		return {
 			render,
-			invalidate: () => {
-				cachedLines = undefined;
-			},
+			invalidate: () => invalidateCache(cache),
 			handleInput,
 		};
 	});
@@ -262,38 +480,47 @@ export default function questions(pi: ExtensionAPI): void {
 				};
 			}
 
-			const labels = params.options.map((option, index) => `${index + 1}. ${option}${index + 1 === recommendedIndex ? "  [recommended]" : ""}`);
-			const customLabel = `${params.options.length + 1}. Custom answer…`;
-			const choices = allowCustom ? [...labels, customLabel] : labels;
-			const selected = await ctx.ui.select(intro, choices);
+			let result = await askSingleSelect(ctx, params.question, params.context, params.options, recommendedIndex, allowCustom);
 
-			if (!selected) {
+			if (result === undefined) {
+				const labels = params.options.map((option, index) => `${index + 1}. ${option}${index + 1 === recommendedIndex ? "  [recommended]" : ""}`);
+				const customLabel = `${params.options.length + 1}. Custom answer…`;
+				const choices = allowCustom ? [...labels, customLabel] : labels;
+				const selected = await ctx.ui.select(intro, choices);
+
+				if (!selected) {
+					return {
+						content: [{ type: "text", text: "The user dismissed the question dialog. Ask for the answer in chat and wait for their response." }],
+						details: { question: params.question, context: params.context, options: params.options, cancelled: true, recommendedIndex } satisfies AskQuestionDetails,
+					};
+				}
+
+				if (selected === customLabel) {
+					const answer = (await ctx.ui.editor("Custom answer", ""))?.trim() ?? "";
+					const choice = "custom";
+					if (!answer) {
+						return {
+							content: [{ type: "text", text: "The user selected custom but did not provide an answer. Ask for the answer in chat and wait for their response." }],
+							details: { question: params.question, context: params.context, options: params.options, cancelled: true, choice, recommendedIndex } satisfies AskQuestionDetails,
+						};
+					}
+					result = { answer, choice };
+				} else {
+					const index = labels.indexOf(selected);
+					result = { choice: index + 1, answer: params.options[index] ?? selected };
+				}
+			}
+
+			if (result === null || result === undefined) {
 				return {
 					content: [{ type: "text", text: "The user dismissed the question dialog. Ask for the answer in chat and wait for their response." }],
 					details: { question: params.question, context: params.context, options: params.options, cancelled: true, recommendedIndex } satisfies AskQuestionDetails,
 				};
 			}
 
-			let answer: string;
-			let choice: number | "custom";
-			if (selected === customLabel) {
-				answer = (await ctx.ui.editor("Custom answer", ""))?.trim() ?? "";
-				choice = "custom";
-				if (!answer) {
-					return {
-						content: [{ type: "text", text: "The user selected custom but did not provide an answer. Ask for the answer in chat and wait for their response." }],
-						details: { question: params.question, context: params.context, options: params.options, cancelled: true, choice, recommendedIndex } satisfies AskQuestionDetails,
-					};
-				}
-			} else {
-				const index = labels.indexOf(selected);
-				choice = index + 1;
-				answer = params.options[index] ?? selected;
-			}
-
 			return {
-				content: [{ type: "text", text: `User answer: ${answer}` }],
-				details: { question: params.question, context: params.context, options: params.options, answer, choice, recommendedIndex } satisfies AskQuestionDetails,
+				content: [{ type: "text", text: `User answer: ${result.answer}` }],
+				details: { question: params.question, context: params.context, options: params.options, answer: result.answer, choice: result.choice, recommendedIndex } satisfies AskQuestionDetails,
 			};
 		},
 		renderCall(args, theme) {
@@ -353,7 +580,24 @@ export default function questions(pi: ExtensionAPI): void {
 
 			const result = await askMultiSelect(ctx, params.question, params.context, params.options, params.defaultSelectedIndexes, minSelections, maxSelections);
 
-			if (!result) {
+			if (result === undefined) {
+				const lines = [intro, ...params.options.map((option, index) => `[ ] ${index + 1}. ${option}`), selectionSummary(0, minSelections, maxSelections)];
+				return {
+					content: [{ type: "text", text: `No interactive UI is available. Ask the user this multiple-answer question in chat:\n\n${lines.join("\n")}` }],
+					details: {
+						question: params.question,
+						context: params.context,
+						options: params.options,
+						answers: [],
+						selectedIndexes: [],
+						needsChatQuestion: true,
+						minSelections,
+						maxSelections,
+					} satisfies AskMultiQuestionDetails,
+				};
+			}
+
+			if (result === null) {
 				return {
 					content: [{ type: "text", text: "The user dismissed the multi-answer question dialog. Ask for the answer in chat and wait for their response." }],
 					details: {
