@@ -1,11 +1,9 @@
 {
-  "lastChangelogVersion": "0.75.4",
+  "lastChangelogVersion": "0.78.0",
   "defaultProvider": "openai-codex",
   "defaultModel": "gpt-5.5",
   "defaultThinkingLevel": "low",
   "transport": "sse",
-  "packages": [
-    "/home/psrock/github/forks/pi/packages/coding-agent/examples/extensions/mcp"
-  ],
-  "theme": "midnight-nord"
+  "theme": "midnight-nord",
+  "hideThinkingBlock": false
 }

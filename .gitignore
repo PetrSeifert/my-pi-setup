@@ -4,6 +4,8 @@
 
 # Local/runtime files
 /bin/
+/backups/
+/mcp-cache.json
 *.log
 .DS_Store
 
